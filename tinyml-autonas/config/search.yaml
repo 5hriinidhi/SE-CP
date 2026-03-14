@@ -1,4 +1,12 @@
-# run params: domain, trial_budget, max_latency_ms
+hardware_id: ESP32-DEVKITV1
 domain: audio_classification
-trial_budget: 100
-max_latency_ms: 50
+dataset_path: ./data/demo
+num_classes: 10
+trial_budget: 50
+max_latency_ms: 20
+max_model_size_kb: 80
+target_accuracy: 0.90
+tuner_strategy: TPE
+llm_model: gpt-4o
+quantization: int8
+epochs: 20
