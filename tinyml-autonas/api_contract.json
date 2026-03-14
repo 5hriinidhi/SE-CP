@@ -1,1 +1,1146 @@
-{}
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "TinyML AutoNAS API",
+    "version": "1.0.0",
+    "description": "LLM-Guided Neural Architecture Search (NAS) system that automatically designs compressed neural networks deployable on microcontrollers (ESP32, STM32, etc.). The tool takes a hardware target and ML task domain as input, queries an LLM for architecture hints, prunes a search space, simulates latency/memory without real deployment, trains candidate models, and exports the best architecture as a TFLite binary ready to flash onto a chip.",
+    "contact": {
+      "name": "TinyML AutoNAS Project",
+      "email": "developer@autonas.local"
+    },
+    "license": {
+      "name": "MIT"
+    },
+    "x-project-summary": {
+      "problem": "Powerful AI models are too large for cheap microcontrollers. Engineers manually compress them — a slow, error-prone process taking weeks.",
+      "solution": "AutoNAS automatically finds the optimal compressed architecture for a given chip by combining LLM-guided search-space pruning with fast latency simulation and NNI-driven trial-and-error.",
+      "tech_stack": ["Python", "PyTorch", "Microsoft NNI", "TFLite Converter", "OpenAI / Anthropic API", "ESP32"],
+      "key_innovation": "LLM provides domain-aware hints (e.g. 'prefer depthwise-separable layers for audio') to prune the search space before NNI begins, making the process 5-10x faster than blind random search."
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000/api/v1",
+      "description": "Local development server"
+    },
+    {
+      "url": "https://autonas.example.com/api/v1",
+      "description": "Production server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Hardware",
+      "description": "Register and validate target microcontroller hardware profiles."
+    },
+    {
+      "name": "Search",
+      "description": "Create, monitor, and manage NAS search runs."
+    },
+    {
+      "name": "Candidates",
+      "description": "Inspect individual architecture candidates generated during a search run."
+    },
+    {
+      "name": "LLM Advisor",
+      "description": "Query the LLM advisor directly for domain hints and architecture ranking."
+    },
+    {
+      "name": "Simulator",
+      "description": "Run standalone latency and memory simulations without starting a full search."
+    },
+    {
+      "name": "Export",
+      "description": "Export the best trained model to TFLite format for MCU deployment."
+    },
+    {
+      "name": "Results",
+      "description": "Fetch Pareto-optimal results, accuracy/latency tradeoff curves, and logs."
+    }
+  ],
+  "paths": {
+
+    "/hardware": {
+      "post": {
+        "tags": ["Hardware"],
+        "operationId": "registerHardwareProfile",
+        "summary": "Register a new hardware target",
+        "description": "Registers a microcontroller hardware profile (chip ID, flash size, SRAM, clock speed). This profile is used by the Latency Simulator to check if a candidate architecture fits the chip before wasting time training it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/HardwareConfigInput" },
+              "example": {
+                "chip_id": "ESP32-WROOM-32",
+                "flash_kb": 4096,
+                "sram_kb": 520,
+                "mhz": 240,
+                "architecture_family": "Xtensa LX6",
+                "supports_simd": false,
+                "has_fpu": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Hardware profile created successfully.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HardwareConfig" },
+                "example": {
+                  "hardware_id": "hw_abc123",
+                  "chip_id": "ESP32-WROOM-32",
+                  "flash_kb": 4096,
+                  "sram_kb": 520,
+                  "mhz": 240,
+                  "architecture_family": "Xtensa LX6",
+                  "supports_simd": false,
+                  "has_fpu": true,
+                  "created_at": "2025-03-11T10:00:00Z"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      },
+      "get": {
+        "tags": ["Hardware"],
+        "operationId": "listHardwareProfiles",
+        "summary": "List all registered hardware profiles",
+        "responses": {
+          "200": {
+            "description": "Array of hardware profiles.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/HardwareConfig" }
+                    },
+                    "total": { "type": "integer", "example": 3 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/hardware/{hardware_id}": {
+      "get": {
+        "tags": ["Hardware"],
+        "operationId": "getHardwareProfile",
+        "summary": "Get a hardware profile by ID",
+        "parameters": [
+          { "$ref": "#/components/parameters/HardwareId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Hardware profile details.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HardwareConfig" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Hardware"],
+        "operationId": "deleteHardwareProfile",
+        "summary": "Delete a hardware profile",
+        "parameters": [
+          { "$ref": "#/components/parameters/HardwareId" }
+        ],
+        "responses": {
+          "204": { "description": "Deleted successfully." },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+
+    "/search": {
+      "post": {
+        "tags": ["Search"],
+        "operationId": "createSearchRun",
+        "summary": "Start a new NAS search run",
+        "description": "Kicks off a full AutoNAS pipeline: (1) queries the LLM Advisor for domain-specific hints, (2) builds a pruned search space, (3) iteratively samples architectures, simulates feasibility, trains feasible ones, reports scores to NNI, and (4) exports the best model as TFLite when the trial budget is exhausted.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SearchRunInput" },
+              "example": {
+                "hardware_id": "hw_abc123",
+                "domain": "audio_classification",
+                "dataset_path": "/data/speechcommands_mini",
+                "num_classes": 10,
+                "trial_budget": 50,
+                "max_latency_ms": 20,
+                "max_model_size_kb": 80,
+                "target_accuracy": 0.90,
+                "tuner_strategy": "TPE",
+                "llm_model": "gpt-4o",
+                "quantization": "int8",
+                "tags": ["demo", "ESP32", "audio"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Search run accepted and queued. Poll /search/{run_id} for status.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SearchRun" },
+                "example": {
+                  "run_id": "run_xyz789",
+                  "status": "queued",
+                  "hardware_id": "hw_abc123",
+                  "domain": "audio_classification",
+                  "trial_budget": 50,
+                  "trials_completed": 0,
+                  "best_accuracy": null,
+                  "best_latency_ms": null,
+                  "best_model_size_kb": null,
+                  "created_at": "2025-03-11T10:05:00Z",
+                  "updated_at": "2025-03-11T10:05:00Z"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "get": {
+        "tags": ["Search"],
+        "operationId": "listSearchRuns",
+        "summary": "List all search runs",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["queued", "running", "completed", "failed"] },
+            "description": "Filter by run status."
+          },
+          {
+            "name": "domain",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Filter by ML task domain."
+          },
+          { "$ref": "#/components/parameters/PageParam" },
+          { "$ref": "#/components/parameters/LimitParam" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of search runs.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PaginatedSearchRuns" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/search/{run_id}": {
+      "get": {
+        "tags": ["Search"],
+        "operationId": "getSearchRun",
+        "summary": "Get status and summary of a search run",
+        "description": "Returns live progress including trials completed, current best accuracy, best model size, and estimated time remaining.",
+        "parameters": [
+          { "$ref": "#/components/parameters/RunId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search run details.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SearchRun" },
+                "example": {
+                  "run_id": "run_xyz789",
+                  "status": "running",
+                  "hardware_id": "hw_abc123",
+                  "domain": "audio_classification",
+                  "trial_budget": 50,
+                  "trials_completed": 23,
+                  "best_accuracy": 0.912,
+                  "best_latency_ms": 14.3,
+                  "best_model_size_kb": 67.2,
+                  "llm_hints_used": ["prefer_depthwise_separable", "avoid_lstm", "use_small_kernels"],
+                  "created_at": "2025-03-11T10:05:00Z",
+                  "updated_at": "2025-03-11T10:47:00Z"
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Search"],
+        "operationId": "cancelSearchRun",
+        "summary": "Cancel a running or queued search run",
+        "parameters": [
+          { "$ref": "#/components/parameters/RunId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run cancelled. Returns final state.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SearchRun" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "Cannot cancel — run already completed or failed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/search/{run_id}/candidates": {
+      "get": {
+        "tags": ["Candidates"],
+        "operationId": "listCandidates",
+        "summary": "List all architecture candidates trialled in a run",
+        "description": "Returns all architecture candidates sampled during the search run, including those rejected by the latency simulator (infeasible) and those that were trained and scored.",
+        "parameters": [
+          { "$ref": "#/components/parameters/RunId" },
+          {
+            "name": "feasible_only",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false },
+            "description": "If true, only return candidates that passed the latency/memory simulator check."
+          },
+          { "$ref": "#/components/parameters/PageParam" },
+          { "$ref": "#/components/parameters/LimitParam" }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of architecture candidates.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PaginatedCandidates" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+
+    "/search/{run_id}/candidates/{candidate_id}": {
+      "get": {
+        "tags": ["Candidates"],
+        "operationId": "getCandidate",
+        "summary": "Get full details of a single architecture candidate",
+        "description": "Returns the complete layer-by-layer architecture definition, simulated stats, training metrics, and whether this candidate was selected as the best.",
+        "parameters": [
+          { "$ref": "#/components/parameters/RunId" },
+          { "$ref": "#/components/parameters/CandidateId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Architecture candidate details.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Candidate" },
+                "example": {
+                  "candidate_id": "cand_001",
+                  "run_id": "run_xyz789",
+                  "trial_number": 12,
+                  "feasible": true,
+                  "is_best": false,
+                  "architecture": {
+                    "layers": [
+                      { "type": "Conv2D", "out_channels": 16, "kernel_size": 3, "stride": 1, "activation": "relu" },
+                      { "type": "DepthwiseSepConv", "out_channels": 32, "kernel_size": 3, "multiplier": 1.0 },
+                      { "type": "GlobalAvgPool" },
+                      { "type": "Dense", "units": 10, "activation": "softmax" }
+                    ],
+                    "total_params": 18432,
+                    "total_flops": 2097152
+                  },
+                  "simulation": {
+                    "estimated_latency_ms": 14.3,
+                    "estimated_model_size_kb": 67.2,
+                    "estimated_peak_ram_kb": 48.1,
+                    "feasibility_check_passed": true
+                  },
+                  "training": {
+                    "val_accuracy": 0.893,
+                    "val_loss": 0.312,
+                    "epochs_trained": 20,
+                    "training_duration_s": 142
+                  },
+                  "nni_score": 0.893
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+
+    "/llm/hints": {
+      "post": {
+        "tags": ["LLM Advisor"],
+        "operationId": "getLLMHints",
+        "summary": "Get architecture hints from the LLM for a given domain",
+        "description": "Sends a prompt to the configured LLM (GPT-4, Claude, etc.) describing the target domain and hardware constraints. The LLM returns a list of architectural recommendations (e.g. 'prefer depthwise-separable convolutions', 'avoid recurrent layers') that AutoNAS uses to prune the search space before NNI begins. This is the core innovation: domain-aware pruning without human intervention.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LLMHintsInput" },
+              "example": {
+                "domain": "audio_classification",
+                "hardware_id": "hw_abc123",
+                "task_description": "Keyword spotting for 10 voice commands on a smartwatch chip. Must run under 20ms and fit in 80KB flash.",
+                "llm_model": "gpt-4o",
+                "max_hints": 8
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "LLM-generated hints for search space pruning.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LLMHintsResponse" },
+                "example": {
+                  "domain": "audio_classification",
+                  "llm_model": "gpt-4o",
+                  "hints": [
+                    { "hint": "prefer_depthwise_separable", "reason": "DSConv uses ~8x fewer parameters than standard conv, critical for 80KB flash constraint.", "priority": 1 },
+                    { "hint": "use_small_kernels_1x3_or_3x1", "reason": "Audio spectrograms are asymmetric; 1D-like kernels capture temporal patterns efficiently.", "priority": 2 },
+                    { "hint": "avoid_lstm_or_gru", "reason": "Recurrent layers have high activation memory cost at inference, problematic for 520KB SRAM.", "priority": 1 },
+                    { "hint": "use_global_average_pooling_not_flatten", "reason": "GAP drastically reduces parameter count before the dense head.", "priority": 2 },
+                    { "hint": "max_3_conv_blocks", "reason": "Deeper networks exceed latency budget on 240MHz Xtensa core without SIMD.", "priority": 1 }
+                  ],
+                  "pruned_search_space_size": 312,
+                  "original_search_space_size": 4096,
+                  "reduction_ratio": 0.924,
+                  "tokens_used": 847,
+                  "latency_ms": 1240
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "502": {
+            "description": "LLM API upstream error.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/llm/rank": {
+      "post": {
+        "tags": ["LLM Advisor"],
+        "operationId": "rankCandidatesLLM",
+        "summary": "Ask LLM to rank a set of architecture candidates",
+        "description": "Passes a shortlist of architecture definitions to the LLM and asks it to rank them by expected suitability for the given domain. Useful as a tie-breaker when multiple candidates have similar NNI scores.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["domain", "candidates"],
+                "properties": {
+                  "domain": { "type": "string" },
+                  "hardware_id": { "type": "string" },
+                  "candidates": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/ArchitectureSummary" },
+                    "maxItems": 10
+                  },
+                  "llm_model": { "type": "string", "default": "gpt-4o" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ranked list of candidates with LLM rationale.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ranked": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "candidate_id": { "type": "string" },
+                          "rank": { "type": "integer" },
+                          "llm_rationale": { "type": "string" }
+                        }
+                      }
+                    },
+                    "explanation": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/simulator/estimate": {
+      "post": {
+        "tags": ["Simulator"],
+        "operationId": "estimateArchitecture",
+        "summary": "Simulate latency and memory for an architecture without training",
+        "description": "The core speed optimization of AutoNAS. Instead of deploying a model to real hardware (which takes minutes), this endpoint uses a lookup table (LUT) of per-operator costs calibrated to the target chip to estimate latency and RAM usage in milliseconds. If the estimate fails the hardware constraints, the candidate is discarded in microseconds, saving enormous compute.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SimulateInput" },
+              "example": {
+                "hardware_id": "hw_abc123",
+                "architecture": {
+                  "layers": [
+                    { "type": "Conv2D", "out_channels": 16, "kernel_size": 3, "stride": 1, "input_shape": [1, 40, 40] },
+                    { "type": "DepthwiseSepConv", "out_channels": 32, "kernel_size": 3 },
+                    { "type": "GlobalAvgPool" },
+                    { "type": "Dense", "units": 10 }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Simulation results.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SimulationResult" },
+                "example": {
+                  "estimated_latency_ms": 14.3,
+                  "estimated_model_size_kb": 67.2,
+                  "estimated_peak_ram_kb": 48.1,
+                  "feasibility_check_passed": true,
+                  "constraint_violations": [],
+                  "per_layer_breakdown": [
+                    { "layer_index": 0, "type": "Conv2D", "latency_ms": 8.1, "size_kb": 32.1 },
+                    { "layer_index": 1, "type": "DepthwiseSepConv", "latency_ms": 4.7, "size_kb": 28.6 },
+                    { "layer_index": 2, "type": "GlobalAvgPool", "latency_ms": 0.9, "size_kb": 0.0 },
+                    { "layer_index": 3, "type": "Dense", "latency_ms": 0.6, "size_kb": 6.5 }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+
+    "/export/{run_id}": {
+      "post": {
+        "tags": ["Export"],
+        "operationId": "exportBestModel",
+        "summary": "Export the best model from a completed run to TFLite",
+        "description": "Takes the highest-scoring feasible architecture from a completed search run, applies INT8 post-training quantization (PTQ), and converts it to a TFLite FlatBuffer (.tflite) file ready to flash onto the target microcontroller. The quantization step is what allows a PyTorch-trained float32 model to run on chips without floating-point units.",
+        "parameters": [
+          { "$ref": "#/components/parameters/RunId" }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "quantization": {
+                    "type": "string",
+                    "enum": ["float32", "float16", "int8"],
+                    "default": "int8",
+                    "description": "Quantization mode. INT8 gives the smallest binary, recommended for MCUs."
+                  },
+                  "calibration_dataset_path": {
+                    "type": "string",
+                    "description": "Path to a small representative dataset for INT8 calibration (required for int8 quantization)."
+                  },
+                  "output_filename": {
+                    "type": "string",
+                    "default": "model.tflite"
+                  }
+                }
+              },
+              "example": {
+                "quantization": "int8",
+                "calibration_dataset_path": "/data/speechcommands_mini/calibration",
+                "output_filename": "nas_best_audio.tflite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Export completed. Returns download URL and model stats.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ExportResult" },
+                "example": {
+                  "run_id": "run_xyz789",
+                  "export_id": "exp_001",
+                  "filename": "nas_best_audio.tflite",
+                  "download_url": "/api/v1/export/run_xyz789/download/exp_001",
+                  "quantization": "int8",
+                  "model_size_kb": 67.2,
+                  "peak_ram_kb": 48.1,
+                  "estimated_latency_ms": 14.3,
+                  "val_accuracy_float32": 0.912,
+                  "val_accuracy_int8": 0.908,
+                  "accuracy_drop": 0.004,
+                  "created_at": "2025-03-11T11:30:00Z"
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "Run has not completed yet.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/export/{run_id}/download/{export_id}": {
+      "get": {
+        "tags": ["Export"],
+        "operationId": "downloadTFLiteModel",
+        "summary": "Download the exported .tflite binary",
+        "description": "Streams the compiled .tflite file for direct flashing onto the ESP32 or other target MCU via esptool or Arduino IDE.",
+        "parameters": [
+          { "$ref": "#/components/parameters/RunId" },
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "TFLite binary file stream.",
+            "content": {
+              "application/octet-stream": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+
+    "/results/{run_id}/pareto": {
+      "get": {
+        "tags": ["Results"],
+        "operationId": "getParetoFront",
+        "summary": "Get the Pareto-optimal accuracy vs. model-size tradeoff",
+        "description": "Returns all non-dominated candidates on the accuracy vs. model-size Pareto front. A candidate is Pareto-optimal if no other candidate is simultaneously more accurate AND smaller. Useful for presenting tradeoff charts to stakeholders.",
+        "parameters": [
+          { "$ref": "#/components/parameters/RunId" },
+          {
+            "name": "x_axis",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["model_size_kb", "latency_ms", "param_count"], "default": "model_size_kb" }
+          },
+          {
+            "name": "y_axis",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["val_accuracy", "val_loss"], "default": "val_accuracy" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pareto front candidates.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run_id": { "type": "string" },
+                    "x_axis": { "type": "string" },
+                    "y_axis": { "type": "string" },
+                    "pareto_front": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ParetoPoint" }
+                    },
+                    "best_accuracy_candidate_id": { "type": "string" },
+                    "best_size_candidate_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/results/{run_id}/logs": {
+      "get": {
+        "tags": ["Results"],
+        "operationId": "getRunLogs",
+        "summary": "Stream or fetch logs from a search run",
+        "parameters": [
+          { "$ref": "#/components/parameters/RunId" },
+          {
+            "name": "tail",
+            "in": "query",
+            "schema": { "type": "integer", "default": 100 },
+            "description": "Number of most recent log lines to return."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Log lines.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run_id": { "type": "string" },
+                    "lines": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "timestamp": { "type": "string", "format": "date-time" },
+                          "level": { "type": "string", "enum": ["INFO", "WARNING", "ERROR", "DEBUG"] },
+                          "message": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "components": {
+    "parameters": {
+      "HardwareId": {
+        "name": "hardware_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Unique hardware profile identifier."
+      },
+      "RunId": {
+        "name": "run_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Unique NAS search run identifier."
+      },
+      "CandidateId": {
+        "name": "candidate_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Unique architecture candidate identifier."
+      },
+      "PageParam": {
+        "name": "page",
+        "in": "query",
+        "schema": { "type": "integer", "default": 1, "minimum": 1 }
+      },
+      "LimitParam": {
+        "name": "limit",
+        "in": "query",
+        "schema": { "type": "integer", "default": 20, "minimum": 1, "maximum": 100 }
+      }
+    },
+
+    "schemas": {
+
+      "HardwareConfigInput": {
+        "type": "object",
+        "required": ["chip_id", "flash_kb", "sram_kb", "mhz"],
+        "description": "Microcontroller hardware constraints. Used by LatencySimulator to check if candidate architectures fit on the chip.",
+        "properties": {
+          "chip_id": { "type": "string", "example": "ESP32-WROOM-32", "description": "Human-readable chip identifier." },
+          "flash_kb": { "type": "integer", "example": 4096, "description": "Flash storage in kilobytes. Model weights must fit here." },
+          "sram_kb": { "type": "integer", "example": 520, "description": "SRAM in kilobytes. Activations (intermediate tensors) must fit here at inference time." },
+          "mhz": { "type": "integer", "example": 240, "description": "CPU clock speed. Used to estimate inference latency via the operator LUT." },
+          "architecture_family": { "type": "string", "example": "Xtensa LX6" },
+          "supports_simd": { "type": "boolean", "default": false },
+          "has_fpu": { "type": "boolean", "default": false }
+        }
+      },
+
+      "HardwareConfig": {
+        "allOf": [
+          { "$ref": "#/components/schemas/HardwareConfigInput" },
+          {
+            "type": "object",
+            "properties": {
+              "hardware_id": { "type": "string" },
+              "created_at": { "type": "string", "format": "date-time" }
+            }
+          }
+        ]
+      },
+
+      "SearchRunInput": {
+        "type": "object",
+        "required": ["hardware_id", "domain", "dataset_path", "num_classes"],
+        "description": "Parameters for a NAS search run. AutoNAS will use these to configure the LLM prompt, simulator constraints, NNI tuner, and training loop.",
+        "properties": {
+          "hardware_id": { "type": "string", "description": "Reference to a registered HardwareConfig." },
+          "domain": {
+            "type": "string",
+            "enum": ["audio_classification", "image_classification", "time_series", "keyword_spotting", "anomaly_detection", "object_detection"],
+            "description": "ML task domain. Sent to LLM to get domain-specific architecture hints."
+          },
+          "dataset_path": { "type": "string", "description": "Local or S3 path to training dataset." },
+          "num_classes": { "type": "integer", "minimum": 2 },
+          "trial_budget": { "type": "integer", "default": 50, "description": "Maximum number of architecture candidates to trial before stopping." },
+          "max_latency_ms": { "type": "number", "description": "Hard constraint: candidates exceeding this latency (estimated by simulator) are immediately discarded." },
+          "max_model_size_kb": { "type": "number", "description": "Hard constraint: model weights must fit in this many KB of flash." },
+          "target_accuracy": { "type": "number", "description": "Optional soft target. Search stops early if a model exceeds this accuracy AND fits constraints." },
+          "tuner_strategy": {
+            "type": "string",
+            "enum": ["TPE", "Random", "Evolution", "BOHB"],
+            "default": "TPE",
+            "description": "NNI hyperparameter tuning strategy. TPE (Tree-structured Parzen Estimator) is recommended for most cases."
+          },
+          "llm_model": { "type": "string", "default": "gpt-4o", "description": "LLM to use for architecture hints." },
+          "quantization": { "type": "string", "enum": ["float32", "float16", "int8"], "default": "int8" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+
+      "SearchRun": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "status": { "type": "string", "enum": ["queued", "running", "completed", "failed", "cancelled"] },
+          "hardware_id": { "type": "string" },
+          "domain": { "type": "string" },
+          "trial_budget": { "type": "integer" },
+          "trials_completed": { "type": "integer" },
+          "best_accuracy": { "type": "number", "nullable": true },
+          "best_latency_ms": { "type": "number", "nullable": true },
+          "best_model_size_kb": { "type": "number", "nullable": true },
+          "best_candidate_id": { "type": "string", "nullable": true },
+          "llm_hints_used": { "type": "array", "items": { "type": "string" } },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "completed_at": { "type": "string", "format": "date-time", "nullable": true },
+          "error_message": { "type": "string", "nullable": true }
+        }
+      },
+
+      "PaginatedSearchRuns": {
+        "type": "object",
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/SearchRun" } },
+          "total": { "type": "integer" },
+          "page": { "type": "integer" },
+          "limit": { "type": "integer" }
+        }
+      },
+
+      "Candidate": {
+        "type": "object",
+        "description": "A single architecture candidate evaluated during a NAS search run.",
+        "properties": {
+          "candidate_id": { "type": "string" },
+          "run_id": { "type": "string" },
+          "trial_number": { "type": "integer" },
+          "feasible": { "type": "boolean", "description": "Whether this candidate passed the latency/memory simulator check. Infeasible candidates are not trained." },
+          "is_best": { "type": "boolean", "description": "Whether this is the overall best candidate from the run." },
+          "architecture": { "$ref": "#/components/schemas/ArchitectureDefinition" },
+          "simulation": { "$ref": "#/components/schemas/SimulationResult" },
+          "training": { "$ref": "#/components/schemas/TrainingMetrics" },
+          "nni_score": { "type": "number", "nullable": true, "description": "The score reported to NNI (typically val_accuracy). Null if infeasible." }
+        }
+      },
+
+      "PaginatedCandidates": {
+        "type": "object",
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/Candidate" } },
+          "total": { "type": "integer" },
+          "page": { "type": "integer" },
+          "limit": { "type": "integer" }
+        }
+      },
+
+      "ArchitectureDefinition": {
+        "type": "object",
+        "description": "Full layer-by-layer definition of a neural network architecture.",
+        "properties": {
+          "layers": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/LayerDefinition" }
+          },
+          "total_params": { "type": "integer", "description": "Total trainable parameter count." },
+          "total_flops": { "type": "integer", "description": "Total floating-point operations for one forward pass." }
+        }
+      },
+
+      "LayerDefinition": {
+        "type": "object",
+        "description": "Single layer in a neural network architecture.",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["Conv2D", "DepthwiseSepConv", "Dense", "GlobalAvgPool", "BatchNorm", "ReLU", "Dropout", "MaxPool2D", "Flatten"],
+            "description": "Layer type. DepthwiseSepConv is favored by the LLM for MCU targets due to low parameter count."
+          },
+          "out_channels": { "type": "integer" },
+          "kernel_size": { "type": "integer" },
+          "stride": { "type": "integer" },
+          "padding": { "type": "string", "enum": ["same", "valid"] },
+          "activation": { "type": "string", "enum": ["relu", "relu6", "sigmoid", "softmax", "none"] },
+          "units": { "type": "integer", "description": "For Dense layers only." },
+          "multiplier": { "type": "number", "description": "Width multiplier for DepthwiseSepConv." },
+          "input_shape": { "type": "array", "items": { "type": "integer" }, "description": "Only set for the first layer." }
+        }
+      },
+
+      "ArchitectureSummary": {
+        "type": "object",
+        "properties": {
+          "candidate_id": { "type": "string" },
+          "layer_types": { "type": "array", "items": { "type": "string" } },
+          "total_params": { "type": "integer" },
+          "estimated_latency_ms": { "type": "number" },
+          "estimated_model_size_kb": { "type": "number" },
+          "val_accuracy": { "type": "number" }
+        }
+      },
+
+      "SimulateInput": {
+        "type": "object",
+        "required": ["hardware_id", "architecture"],
+        "properties": {
+          "hardware_id": { "type": "string" },
+          "architecture": { "$ref": "#/components/schemas/ArchitectureDefinition" }
+        }
+      },
+
+      "SimulationResult": {
+        "type": "object",
+        "description": "Output of the LatencySimulator. Computed in microseconds using per-operator LUT without actual hardware deployment.",
+        "properties": {
+          "estimated_latency_ms": { "type": "number", "description": "Predicted inference time on target chip in milliseconds." },
+          "estimated_model_size_kb": { "type": "number", "description": "Predicted size of quantized weights in kilobytes (must fit in flash)." },
+          "estimated_peak_ram_kb": { "type": "number", "description": "Predicted peak RAM usage during inference (must fit in SRAM)." },
+          "feasibility_check_passed": { "type": "boolean", "description": "True if all constraints (latency, flash, SRAM) are satisfied." },
+          "constraint_violations": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Human-readable list of violated constraints, e.g. ['model_size 112KB > max_flash 80KB']."
+          },
+          "per_layer_breakdown": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "layer_index": { "type": "integer" },
+                "type": { "type": "string" },
+                "latency_ms": { "type": "number" },
+                "size_kb": { "type": "number" }
+              }
+            }
+          }
+        }
+      },
+
+      "TrainingMetrics": {
+        "type": "object",
+        "description": "Metrics from training a feasible candidate architecture on the user's dataset.",
+        "properties": {
+          "val_accuracy": { "type": "number" },
+          "val_loss": { "type": "number" },
+          "train_accuracy": { "type": "number" },
+          "train_loss": { "type": "number" },
+          "epochs_trained": { "type": "integer" },
+          "training_duration_s": { "type": "number" }
+        }
+      },
+
+      "LLMHintsInput": {
+        "type": "object",
+        "required": ["domain"],
+        "properties": {
+          "domain": { "type": "string" },
+          "hardware_id": { "type": "string" },
+          "task_description": { "type": "string", "description": "Free-text description of the task. Helps the LLM give more specific hints." },
+          "llm_model": { "type": "string", "default": "gpt-4o" },
+          "max_hints": { "type": "integer", "default": 8 }
+        }
+      },
+
+      "LLMHintsResponse": {
+        "type": "object",
+        "properties": {
+          "domain": { "type": "string" },
+          "llm_model": { "type": "string" },
+          "hints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "hint": { "type": "string", "description": "Machine-readable hint key." },
+                "reason": { "type": "string", "description": "LLM explanation of why this hint applies." },
+                "priority": { "type": "integer", "enum": [1, 2, 3], "description": "1 = critical constraint, 2 = strong recommendation, 3 = minor suggestion." }
+              }
+            }
+          },
+          "pruned_search_space_size": { "type": "integer", "description": "Number of candidate architectures remaining after applying hints." },
+          "original_search_space_size": { "type": "integer" },
+          "reduction_ratio": { "type": "number", "description": "Fraction of search space eliminated. Higher is better (less compute wasted)." },
+          "tokens_used": { "type": "integer" },
+          "latency_ms": { "type": "integer", "description": "Time taken to call LLM API." }
+        }
+      },
+
+      "ExportResult": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "export_id": { "type": "string" },
+          "filename": { "type": "string" },
+          "download_url": { "type": "string" },
+          "quantization": { "type": "string" },
+          "model_size_kb": { "type": "number" },
+          "peak_ram_kb": { "type": "number" },
+          "estimated_latency_ms": { "type": "number" },
+          "val_accuracy_float32": { "type": "number" },
+          "val_accuracy_int8": { "type": "number", "nullable": true },
+          "accuracy_drop": { "type": "number", "nullable": true, "description": "Accuracy loss due to INT8 quantization. Typically < 1%." },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+
+      "ParetoPoint": {
+        "type": "object",
+        "properties": {
+          "candidate_id": { "type": "string" },
+          "x_value": { "type": "number" },
+          "y_value": { "type": "number" },
+          "label": { "type": "string" }
+        }
+      },
+
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string" },
+          "message": { "type": "string" },
+          "details": { "type": "object" }
+        }
+      }
+    },
+
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request body or parameters.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Request body failed schema validation.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    },
+
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "ApiKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    }
+  },
+
+  "security": [
+    { "BearerAuth": [] },
+    { "ApiKeyHeader": [] }
+  ],
+
+  "x-workflow": {
+    "description": "Complete end-to-end AutoNAS workflow with API call sequence",
+    "steps": [
+      { "step": 1, "call": "POST /hardware", "description": "Register your ESP32 or other target chip with its flash, SRAM, and clock constraints." },
+      { "step": 2, "call": "POST /llm/hints", "description": "Optional: preview LLM hints for your domain before starting a run." },
+      { "step": 3, "call": "POST /search", "description": "Kick off the NAS run. AutoNAS internally calls LLM, builds search space, loops through NNI trials." },
+      { "step": 4, "call": "GET /search/{run_id}", "description": "Poll every 30s to monitor progress — trials completed, current best accuracy, best size." },
+      { "step": 5, "call": "GET /search/{run_id}/candidates", "description": "Browse all trialled architectures to understand what was explored." },
+      { "step": 6, "call": "GET /results/{run_id}/pareto", "description": "View the accuracy vs. size Pareto front to pick the right tradeoff." },
+      { "step": 7, "call": "POST /export/{run_id}", "description": "Export the best model to INT8 TFLite format for MCU deployment." },
+      { "step": 8, "call": "GET /export/{run_id}/download/{export_id}", "description": "Download the .tflite binary and flash it to your chip." }
+    ]
+  }
+}
