@@ -1,0 +1,4 @@
+# run params: domain, trial_budget, max_latency_ms
+domain: audio_classification
+trial_budget: 100
+max_latency_ms: 50

@@ -1,0 +1,4 @@
+# chip specs: flash_kb, sram_kb, mhz, etc.
+flash_kb: 4096
+sram_kb: 520
+mhz: 240

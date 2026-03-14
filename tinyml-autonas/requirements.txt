@@ -1,0 +1,11 @@
+nni
+fastapi
+uvicorn
+torch
+onnx
+tensorflow
+openpyxl
+pyyaml
+python-dotenv
+openai
+anthropic
