@@ -1,0 +1,12 @@
+hardware_id: ESP32-DEVKITV1
+domain: audio_classification
+dataset_path: ./data/demo
+num_classes: 10
+trial_budget: 50
+max_latency_ms: 20
+max_model_size_kb: 80
+target_accuracy: 0.90
+tuner_strategy: TPE
+llm_model: claude-sonnet-4-5
+quantization: int8
+epochs: 20
