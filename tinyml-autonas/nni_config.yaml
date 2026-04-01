@@ -1,0 +1,13 @@
+# NNI experiment config (tuner, budget, strategy)
+authorName: default
+experimentName: tinyml_nas
+trialConcurrency: 1
+maxTrialNumber: 10
+searchSpaceFile: nni_search_space.json
+useAnnotation: false
+tuner:
+  name: TPE
+  classArgs:
+    optimize_mode: maximize
+trainingService:
+  platform: local

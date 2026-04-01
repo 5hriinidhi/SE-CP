@@ -1,0 +1,6 @@
+chip_id: ESP32-DEVKITV1
+flash_kb: 4096
+sram_kb: 520
+mhz: 240
+has_fpu: true
+supports_simd: false
