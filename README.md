@@ -363,6 +363,4 @@ Then modify the `loop()` function in `esp32_inference.ino` to read from the ADC 
 
 ---
 
-## 📝 License
-
-MIT
+## SHRINIDHI SE PROJECT DONEEEEEE LESSGOOOOO WOOOOHOOOOO
