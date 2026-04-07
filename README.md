@@ -158,9 +158,30 @@ To truly impress an audience, you want to show the ESP32 recognizing a real hand
    ```
    *This downloads 3 real handwritten digits (a '3', '7', and '0') and converts them into C-code inside `firmware/esp32_inference/mnist_samples.h`.*
 
-2. Follow the standard flashing instructions below to upload the firmware.
-3. Open the **Arduino Serial Monitor (115200 baud)**.
-4. You will see the ESP32 automatically load the real images into its memory one by one, run the tiny neural network you designed, and print out the correct classification in milliseconds!
+2. Run another quick python script to export those exact pixels to `.png` pictures so you can flash them on screen during the demo:
+   ```bash
+   python scripts/export_demo_images.py
+   ```
+   *You'll find these in the `outputs/demo_images/` folder.*
+
+3. Follow the standard flashing instructions (down in the **Hardware Setup** section) to upload the firmware to your ESP32.
+4. Open the **Arduino Serial Monitor (115200 baud)** on the right half of your screen. Open the exported PNG pictures on the left half.
+5. You will see the ESP32 automatically read the raw pixels entirely offline and print out the correct classification!
+
+**Expected Serial Output during your Demo:**
+```text
+============================
+ TinyML AutoNAS — ESP32 Demo
+============================
+Model loaded. Arena: 65536 bytes
+Offline digit recognition initialized.
+
+----------------------------------------
+Loading test image #1 (Expected Digit: 3)...
+Predicted Digit: 3  (Confidence: 98.40%)
+Inference time: 14.20 ms
+Result: CORRECT! ✅
+```
 
 ### Run the API Server
 
