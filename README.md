@@ -218,106 +218,6 @@ This compares NAS with vs. without LLM hints and prints a comparison table.
 
 ---
 
-## 🫀 Advanced Use Case: AFib Detection on ESP32-S3
-
-> **Note:** The steps above use the built-in MNIST digits dataset because it downloads instantly and requires zero external sensors.
-> 
-> The following section is a **hypothetical walkthrough** to demonstrate how you would configure AutoNAS to build a life-saving medical network (Atrial Fibrillation detection from ECG). If you actually want to build this, you will need to download a real ECG dataset like the [PhysioNet/CinC Challenge 2017 Dataset](https://physionet.org/content/challenge-2017/1.0.0/).
-
-This walkthrough shows how to use AutoNAS to build a neural network that detects Atrial Fibrillation (AFib) from ECG signals on a wearable device.
-
-### Step 1: Update Hardware Config
-
-Replace the contents of `config/hardware.yaml` with your ESP32-S3 specs:
-
-```yaml
-chip_id: ESP32-S3-WROOM-1
-flash_kb: 8192
-sram_kb: 512
-mhz: 240
-has_fpu: true
-supports_simd: true
-```
-
-### Step 2: Update Search Config
-
-Replace the contents of `config/search.yaml`:
-
-```yaml
-hardware_id: ESP32-S3-WROOM-1
-domain: time_series
-task_description: Binary ECG classification Normal vs AFib, 30s segments, wearable device
-dataset_path: ./data/ecg_afib
-num_classes: 2
-trial_budget: 60
-max_latency_ms: 20
-max_model_size_kb: 80
-target_accuracy: 0.990
-tuner_strategy: TPE
-llm_model: gpt-4o
-quantization: int8
-epochs: 30
-```
-
-### Step 3: Prepare Your ECG Dataset
-
-Download the [PhysioNet AFib dataset](https://physionet.org/content/challenge-2017/1.0.0/) and place the parsed ECG data in `./data/ecg_afib/` with this structure:
-
-```
-data/ecg_afib/
-├── train/
-│   ├── normal/       # Normal ECG samples (.npy or .wav)
-│   └── afib/         # AFib ECG samples
-├── val/
-│   ├── normal/
-│   └── afib/
-└── calibration/      # Small subset for INT8 quantization
-    ├── normal/
-    └── afib/
-```
-
-> **No dataset?** Without downloading the data, the system won't understand the directory. Stick to the default `MNIST` setup if you just want to test run the pipeline.
-
-### Step 4: Run the Search
-
-```bash
-python run_nas.py search --config config/search.yaml
-```
-
-The tool will:
-- Ask the LLM: *"What architecture works best for binary ECG classification on ESP32-S3?"*
-- The LLM might suggest: prefer 1D convolutions, avoid LSTMs, use small kernels
-- Search through 60 candidates with those constraints
-- Train each feasible candidate for 30 epochs
-- Stop early if accuracy ≥ 99.0%
-
-### Step 5: Export the Best Model
-
-```bash
-python run_nas.py export --checkpoint /tmp/best_candidate.pth
-```
-
-This creates:
-- `outputs/model_int8.tflite` — the quantized model for ESP32
-- `outputs/model_int8.h` — C header with the model as a byte array
-
-### Step 6: Copy to Firmware
-
-```bash
-copy outputs\model_int8.h firmware\esp32_inference\best_model_data.h
-```
-
-### Step 7: Update Firmware Constants
-
-Open `firmware/esp32_inference/esp32_inference.ino` and update:
-
-```cpp
-#define TENSOR_ARENA_SIZE  (64 * 1024)  // Set to peak_ram_kb * 1024 from export output
-#define NUM_CLASSES        2            // 2 for Normal vs AFib
-```
-
----
-
 ## 🔌 Hardware Setup: Connecting & Flashing the ESP32
 
 ### What You Need
@@ -365,63 +265,7 @@ Download from [arduino.cc/en/software](https://www.arduino.cc/en/software)
 2. When you see `Connecting...`, hold the **BOOT** button on your ESP32 until upload starts
 3. Wait for "Done uploading"
 
-### Step 7: Monitor Output
-
-1. Open **Tools → Serial Monitor**
-2. Set baud rate to **115200**
-3. You should see:
-
-```
-============================
- TinyML AutoNAS — ESP32
-============================
-Model loaded. Arena: 65536 bytes
-Ready for inference.
-
-Class: 0 | Conf: 0.94 | Latency: 14200 us
-Class: 1 | Conf: 0.87 | Latency: 14350 us
-```
-
-- **Class 0** = Normal sinus rhythm
-- **Class 1** = Atrial Fibrillation detected
-
-### Connecting ECG Sensor (for real inference)
-
-To replace the dummy data with real ECG input, connect an ECG sensor module (e.g., AD8232) to your ESP32:
-
-| AD8232 Pin | ESP32 Pin |
-|------------|-----------|
-| GND | GND |
-| 3.3V | 3V3 |
-| OUTPUT | GPIO36 (ADC) |
-| LO+ | GPIO34 |
-| LO- | GPIO35 |
-
-Then modify the `loop()` function in `esp32_inference.ino` to read from the ADC instead of using dummy data.
-
 ---
-1. What to expect?
-The tool has identified the most efficient architecture and saved it as a PyTorch checkpoint.
-
-The Checkpoint: It's currently stored at C:\tmp\best_candidate.pth (or /tmp/ depending on your environment). This contains the "brains" of the model.
-The Performance: You saw the "Best Latency" (0.31 ms) and "Best Model Size" (5.3 KB) in your terminal. These are simulated values — they tell you exactly how this model will perform on an ESP32 without you actually needing the chip yet.
-2. How to see the "Final" Results?
-Since you don't have the hardware, the best way to verify the result is to Export and Inspect the model. This converts the PyTorch code into the actual highly-compressed format used by microcontrollers.
-
-Run this command to export:
-
-powershell
-python run_nas.py export --checkpoint /tmp/best_candidate.pth
-What this will show you:
-
-.tflite file: It will create a file in the outputs/ folder. This is the "Industry Standard" for TinyML. You can upload this file to Netron.app to see a beautiful visual diagram of your neural network layers.
-.h C Header: It generates a C header file. This is what actually gets flashed. You can open it in a text editor to see the model represented as a raw hex array.
-3. Want to see it "Thinking"? (Local Testing)
-If you want to see the model actually making predictions right now on your computer, I can create a quick Local Test Script for you. It will:
-
-Load that best_candidate.pth file.
-Feed it some sample data.
-Print the predictions and confidence scores in your terminal.
 
 ## 📋 Requirements Summary
 
@@ -432,7 +276,6 @@ Print the predictions and confidence scores in your terminal.
 | `ANTHROPIC_API_KEY` | LLM-guided pruning | ❌ Optional |
 | `onnx`, `onnx2tf` | Model export | ❌ Optional |
 | Arduino IDE + ESP32 board | Hardware deployment | ❌ Optional |
-| ECG sensor (AD8232) | Real AFib detection | ❌ Optional |
 
 ---
 
