@@ -128,13 +128,39 @@ This will:
 3. Loop through candidates: simulate → train → score
 4. Save the best model to `outputs/`
 
+> **Note:** Out of the box, `run_nas.py` is configured to instantly download a subset of the **MNIST Handwritten Digits** dataset and train the AI to classify pictures of numbers 0-9.
+
 ### Export the Best Model
 
 ```bash
 python run_nas.py export --checkpoint /tmp/best_candidate.pth
 ```
 
-This converts the best PyTorch model to `.tflite` format and generates a C header file.
+This converts the best PyTorch model to `.tflite` format and generates a C header file (`outputs/model_int8.h`) for the microcontroller.
+
+### Test the Model Locally
+
+Before flashing to actual hardware, you can test the model's accuracy on your PC using real handwritten digit images from the MNIST dataset:
+
+```bash
+python scripts/local_inference.py
+```
+
+This script will pick 5 random images, run them through your optimized architecture, and print the True Class vs Predicted Class side by side!
+
+### 🎯 Presentation Demo: Offline Digit Recognition on ESP32
+
+To truly impress an audience, you want to show the ESP32 recognizing a real handwritten digit **entirely offline** without sending any image data to the cloud (which saves battery, reduces latency, and protects privacy).
+
+1. Before flashing, generate the real C-array test images from the MNIST dataset:
+   ```bash
+   python scripts/generate_mnist_c_array.py
+   ```
+   *This downloads 3 real handwritten digits (a '3', '7', and '0') and converts them into C-code inside `firmware/esp32_inference/mnist_samples.h`.*
+
+2. Follow the standard flashing instructions below to upload the firmware.
+3. Open the **Arduino Serial Monitor (115200 baud)**.
+4. You will see the ESP32 automatically load the real images into its memory one by one, run the tiny neural network you designed, and print out the correct classification in milliseconds!
 
 ### Run the API Server
 
@@ -171,7 +197,11 @@ This compares NAS with vs. without LLM hints and prints a comparison table.
 
 ---
 
-## 🫀 Use Case: AFib Detection on ESP32-S3
+## 🫀 Advanced Use Case: AFib Detection on ESP32-S3
+
+> **Note:** The steps above use the built-in MNIST digits dataset because it downloads instantly and requires zero external sensors.
+> 
+> The following section is a **hypothetical walkthrough** to demonstrate how you would configure AutoNAS to build a life-saving medical network (Atrial Fibrillation detection from ECG). If you actually want to build this, you will need to download a real ECG dataset like the [PhysioNet/CinC Challenge 2017 Dataset](https://physionet.org/content/challenge-2017/1.0.0/).
 
 This walkthrough shows how to use AutoNAS to build a neural network that detects Atrial Fibrillation (AFib) from ECG signals on a wearable device.
 
@@ -210,7 +240,7 @@ epochs: 30
 
 ### Step 3: Prepare Your ECG Dataset
 
-Place your ECG data in `./data/ecg_afib/` with this structure:
+Download the [PhysioNet AFib dataset](https://physionet.org/content/challenge-2017/1.0.0/) and place the parsed ECG data in `./data/ecg_afib/` with this structure:
 
 ```
 data/ecg_afib/
@@ -225,7 +255,7 @@ data/ecg_afib/
     └── afib/
 ```
 
-> **No dataset?** The system will fall back to dummy data for demo purposes.
+> **No dataset?** Without downloading the data, the system won't understand the directory. Stick to the default `MNIST` setup if you just want to test run the pipeline.
 
 ### Step 4: Run the Search
 
@@ -349,6 +379,28 @@ To replace the dummy data with real ECG input, connect an ECG sensor module (e.g
 Then modify the `loop()` function in `esp32_inference.ino` to read from the ADC instead of using dummy data.
 
 ---
+1. What to expect?
+The tool has identified the most efficient architecture and saved it as a PyTorch checkpoint.
+
+The Checkpoint: It's currently stored at C:\tmp\best_candidate.pth (or /tmp/ depending on your environment). This contains the "brains" of the model.
+The Performance: You saw the "Best Latency" (0.31 ms) and "Best Model Size" (5.3 KB) in your terminal. These are simulated values — they tell you exactly how this model will perform on an ESP32 without you actually needing the chip yet.
+2. How to see the "Final" Results?
+Since you don't have the hardware, the best way to verify the result is to Export and Inspect the model. This converts the PyTorch code into the actual highly-compressed format used by microcontrollers.
+
+Run this command to export:
+
+powershell
+python run_nas.py export --checkpoint /tmp/best_candidate.pth
+What this will show you:
+
+.tflite file: It will create a file in the outputs/ folder. This is the "Industry Standard" for TinyML. You can upload this file to Netron.app to see a beautiful visual diagram of your neural network layers.
+.h C Header: It generates a C header file. This is what actually gets flashed. You can open it in a text editor to see the model represented as a raw hex array.
+3. Want to see it "Thinking"? (Local Testing)
+If you want to see the model actually making predictions right now on your computer, I can create a quick Local Test Script for you. It will:
+
+Load that best_candidate.pth file.
+Feed it some sample data.
+Print the predictions and confidence scores in your terminal.
 
 ## 📋 Requirements Summary
 
