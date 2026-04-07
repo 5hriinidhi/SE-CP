@@ -35,8 +35,10 @@ class NASController:
         self.best_latency = 0.0
         self.best_size = 0.0
         self.best_candidate_id = None
+        self.best_candidate_cfg = None
         self.trials_completed = 0
         self.hints = []
+
 
     def run_search(self, train_loader, val_loader) -> dict:
         print(f"Starting NAS Search Run: {self.run_id}")
@@ -88,8 +90,16 @@ class NASController:
                     self.best_latency = sim_res['estimated_latency_ms']
                     self.best_size = sim_res['estimated_model_size_kb']
                     self.best_candidate_id = trial_id
+                    self.best_candidate_cfg = candidate_cfg
+                    
+                    # Backup the absolute best checkpoint
+                    import shutil
+                    import os
+                    if os.path.exists('/tmp/best_candidate.pth'):
+                        shutil.copy('/tmp/best_candidate.pth', '/tmp/global_best.pth')
                 
                 # e. NNI report
+
                 try:
                     nni.report_final_result(acc)
                 except Exception:
@@ -107,6 +117,12 @@ class NASController:
                 print(f"Trial {i+1} failed during training: {e}")
                 continue
 
+        # Restore the absolute best checkpoint back to /tmp/best_candidate.pth for the exporter
+        import shutil
+        import os
+        if os.path.exists('/tmp/global_best.pth'):
+            shutil.copy('/tmp/global_best.pth', '/tmp/best_candidate.pth')
+
         # Step 4: Return SearchRun dict
         return {
             "run_id": self.run_id,
@@ -119,8 +135,10 @@ class NASController:
             "best_latency_ms": self.best_latency,
             "best_model_size_kb": self.best_size,
             "best_candidate_id": self.best_candidate_id,
+            "best_candidate_cfg": self.best_candidate_cfg,
             "llm_hints_used": [h['hint'] for h in self.hints]
         }
+
 
     def _record_trial(self, trial_n, sim_res, train_res, status):
         """Prints a one-line summary after each trial."""

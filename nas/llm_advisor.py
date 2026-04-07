@@ -13,13 +13,22 @@ class LLMAdvisor:
     def __init__(self, model="claude-sonnet-4-5", provider="anthropic"):
         self.model = model
         self.provider = provider
-        # API requires os.environ['ANTHROPIC_API_KEY'] (per user update in previous msg)
-        self.client = anthropic.Anthropic(
-            api_key=os.environ["ANTHROPIC_API_KEY"]
-        )
+        
+        # Check for API key and handle missing gracefully
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if api_key:
+            self.client = anthropic.Anthropic(api_key=api_key)
+        else:
+            self.client = None
+            print(f"[LLMAdvisor] ANTHROPIC_API_KEY not found. LLM hints will be disabled.")
+
 
     def get_hints(self, domain: str, hw: HardwareConfig, task_desc: str = "", max_hints: int = 8) -> list[dict]:
+        if not self.client:
+            return []
+            
         user_msg = self._build_prompt(domain, hw, task_desc, max_hints)
+
         
         try:
             message = self.client.messages.create(

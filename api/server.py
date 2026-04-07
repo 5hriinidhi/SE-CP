@@ -25,3 +25,12 @@ app.include_router(hardware_router, prefix="/api/v1")
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(llm_router, prefix="/api/v1")
 app.include_router(simulator_router, prefix="/api/v1")
+
+@app.get("/")
+async def root():
+    return {
+        "message": "Welcome to TinyML AutoNAS API",
+        "docs": "/docs",
+        "version": "1.0.0"
+    }
+

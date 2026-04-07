@@ -35,10 +35,26 @@ def search(config):
         controller = NASController(config_path=config)
         print_banner("Search Mode", controller.run_id)
         
-        # Setup dummy data for search (40 samples as per Prompt 09/10 tests)
-        # In a real scenario, this would load from config['dataset_path']
-        ds = TensorDataset(torch.randn(40, 1, 40, 40), torch.randint(0, 10, (40,)))
-        dl = DataLoader(ds, batch_size=8)
+        import torchvision
+        import torchvision.transforms as transforms
+        from torch.utils.data import DataLoader, Subset
+        
+        console.print("[yellow]Setting up real MNIST dataset (padded to 40x40)...[/yellow]")
+        transform = transforms.Compose([
+            transforms.Pad(6),  # 28x28 -> 40x40 to match our existing architecture
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+        
+        ds_train_full = torchvision.datasets.MNIST('./data', train=True, download=True, transform=transform)
+        ds_val_full = torchvision.datasets.MNIST('./data', train=False, download=True, transform=transform)
+        
+        # Use a small subset for fast NAS searching (1000 train / 200 val)
+        ds_train = Subset(ds_train_full, range(1000))
+        ds_val = Subset(ds_val_full, range(200))
+        
+        dl = DataLoader(ds_train, batch_size=32, shuffle=True)
+        val_dl = DataLoader(ds_val, batch_size=32, shuffle=False)
         
         budget = controller.config.get('trial_budget', 50)
         
@@ -62,7 +78,7 @@ def search(config):
             
             # Let's just run it for now.
             try:
-                results = controller.run_search(dl, dl)
+                results = controller.run_search(dl, val_dl)
                 progress.update(search_task, completed=results['trials_completed'], description="[green]Search Completed")
             except KeyboardInterrupt:
                 console.print("\n[bold red]Search cancelled.[/bold red]")
@@ -78,6 +94,23 @@ def search(config):
         table.add_row("Trials Completed", str(results['trials_completed']))
         console.print(table)
         
+        # Save best architecture configuration for export/local testing
+        if results.get('best_candidate_cfg'):
+            import json
+            from nas.layers import LayerConfig
+            os.makedirs('outputs', exist_ok=True)
+            
+            # Convert LayerConfig objects to dicts for JSON serialization
+            serializable_cfg = []
+            for lc in results['best_candidate_cfg']:
+                # Filter out None values to keep JSON clean
+                d = {k: v for k, v in lc.__dict__.items() if v is not None}
+                serializable_cfg.append(d)
+                
+            with open('outputs/best_arch.json', 'w') as f:
+                json.dump(serializable_cfg, f, indent=2)
+            console.print(f"\n[bold green]Best architecture saved to:[/bold green] outputs/best_arch.json")
+
     except Exception as e:
         console.print(f"[bold red]Error during search:[/bold red] {e}")
 
@@ -143,24 +176,41 @@ def export(checkpoint, arch_config):
     
     print_banner("Export Mode")
     
-    # For now, use a dummy architecture if arch_config is missing
-    # In a full system, we'd load the config used to create the checkpoint
-    if not arch_config:
-        console.print("[yellow]No arch_config provided. Using default 3-layer DSConv for demo.[/yellow]")
+    # Load architecture from config or fallback to best_arch.json
+    if arch_config:
+        import json
+        with open(arch_config, 'r') as f:
+            arch_dicts = json.load(f)
+        arch = [LayerConfig(**d) for d in arch_dicts]
+    elif os.path.exists('outputs/best_arch.json'):
+        import json
+        console.print("[green]Loading best architecture from outputs/best_arch.json[/green]")
+        with open('outputs/best_arch.json', 'r') as f:
+            arch_dicts = json.load(f)
+        arch = [LayerConfig(**d) for d in arch_dicts]
+    else:
+        console.print("[yellow]No arch_config provided and outputs/best_arch.json not found. Using default 3-layer DSConv for demo.[/yellow]")
         arch = [
             LayerConfig('DepthwiseSepConv', out_channels=16, kernel_size=3),
             LayerConfig('DepthwiseSepConv', out_channels=32, kernel_size=3),
             LayerConfig('DepthwiseSepConv', out_channels=64, kernel_size=3)
         ]
-    else:
-        # Load from file (placeholder logic)
-        arch = [] 
 
     model = Architecture(arch, num_classes=10)
-    # Mock calibration data
-    from torch.utils.data import DataLoader, TensorDataset
-    ds = TensorDataset(torch.randn(10, 1, 40, 40), torch.zeros(10, dtype=torch.long))
-    dl = DataLoader(ds, batch_size=5)
+    # Use real MNIST subset for calibration
+    import torchvision
+    import torchvision.transforms as transforms
+    from torch.utils.data import DataLoader, Subset
+    
+    transform = transforms.Compose([
+        transforms.Pad(6),
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
+    
+    ds_calib_full = torchvision.datasets.MNIST('./data', train=False, download=True, transform=transform)
+    ds_calib = Subset(ds_calib_full, range(100)) # 100 samples for fast Int8 calibration
+    dl = DataLoader(ds_calib, batch_size=5)
     
     exporter = ModelExporter()
     with console.status("[bold green]Exporting to TFLite..."):
