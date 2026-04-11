@@ -2,7 +2,7 @@
 
 **Automatically find the best neural network for your microcontroller.**
 
-TinyML AutoNAS is a tool that designs tiny, optimized neural networks that can run on cheap microcontrollers like ESP32. Instead of manually guessing which neural network architecture will fit on your chip, this tool automatically searches through thousands of possibilities, tests them, and gives you the best one — ready to flash onto your device
+TinyML AutoNAS is a tool that designs tiny, optimized neural networks that can run on cheap microcontrollers like ESP32. Instead of manually guessing which neural network architecture will fit on your chip, this tool automatically searches through thousands of possibilities, tests them, and gives you the best one — ready to flash onto your device.
 
 **How it works in plain English:**
 1. You tell it which chip you're using (e.g., ESP32 with 4MB flash, 520KB RAM)
